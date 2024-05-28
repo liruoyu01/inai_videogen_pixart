@@ -40,34 +40,27 @@ def load_vae(
     if cuda_device:
         vae = vae.to(device=cuda_device)
 
-    # missing_keys, unexpected_keys = vae._init_from_sd_hf('/ML-A100/team/mm/yanghuan/huggingface/stabilityai/sd-vae-ft-ema', subfolder="vae")
-    # if debug_print:
-    #     print('missing keys from loading pixart_sigma_sdxlvae: \n')
-    #     print(missing_keys)
-    #     print('unexpected keys from loading pixart_sigma_sdxlvae: \n')
-    #     print(unexpected_keys)
     
-    # print(f"########### Load img vae ckpt ###########") #488
-    # old_p = "/ML-A100/team/mm/wangqiuyue/experiments/SD_videoVAE_deepspeed/0510_compress_conti25k_conti25k6k_skip2_conv4out2C_2way_34kconti_201ktemponly_full38k_35k_19k_333temponlyfo/global_step27000_full_ori.pt"
-    # old_state = torch.load(old_p)
-    # vae.load_state_dict(old_state, strict=False)
+    print(f"########### Load img vae ckpt ###########") #488
+    old_p = "/ML-A100/team/mm/wangqiuyue/experiments/SD_videoVAE_deepspeed/0510_compress_conti25k_conti25k6k_skip2_conv4out2C_2way_34kconti_201ktemponly_full38k_35k_19k_333temponlyfo/global_step27000_full_ori.pt"
+    old_state = torch.load(old_p)
+    vae.load_state_dict(old_state, strict=False)
 
     print(f"########### Load ckpt {ckpt_path} ###########")
     assert os.path.exists(ckpt_path)
     vae_state = torch.load(ckpt_path)
-    vae.load_state_dict(vae_state, strict=True)
-
+    vae.load_state_dict(vae_state, strict=False)
     return vae
 
 def save_to_local(save_root, save_file_name, frames, duration):
+    # frames range [0,1]
+    frames_forgif = rearrange(frames, 'f c h w -> f h w c')
+
     debug_video_path = os.path.join(save_root, str(save_file_name)+'.png')
-    save_debug_frames = ((frames+1)*2).clamp(0, 1).detach().to(torch.float16)
-    save_image(save_debug_frames, debug_video_path, padding=0)
+    save_image(frames, debug_video_path)
 
     debug_video_path_gif = os.path.join(save_root, str(save_file_name)+'.gif')
-    save_debug_frames_forgif = rearrange(save_debug_frames, 'f c h w -> f h w c')
-
-    export_to_gif(torch.unbind(save_debug_frames_forgif, dim=0), debug_video_path_gif, duration=duration)
+    export_to_gif(torch.unbind(frames_forgif, dim=0), debug_video_path_gif, duration=duration)
 
 def main():
     cuda_device = 'cuda:4'
@@ -82,7 +75,7 @@ def main():
     latent_scale_factor = 0.13025
     data_dir = '/ML-A100/team/mm/yanghuan/data/pexels_clip'
     data_val_meta = '/ML-A100/team/mm/zixit/data/pexles_20240405/pexels_meta_val.jsonl'
-    num_frames = 32
+    num_frames = 16
     fps = 15
     pexles_val = PexelsDataset(data_dir, data_val_meta, [num_frames,3,128,128], [[512, 512]], [1.], [fps])
     video_val_dataloader = DataLoader(
@@ -97,25 +90,24 @@ def main():
     os.makedirs(save_root, exist_ok=True)
 
     for b_idx, batch in enumerate(video_val_dataloader):
-        print(batch['video'].shape)
         frames = rearrange(batch['video'], 'b c f h w -> (b f) c h w')
-        save_to_local(save_root, f'{b_idx}_org', frames, num_frames * 1.0//fps)
+        num_frames = int(batch['num_frames'][0])  
+
+        frames_to_save = ((frames + 1.0)/2.0).clamp(0,1)
+        # frames_to_save must be range [0,1]
+        save_to_local(save_root, f'{b_idx}_org', frames_to_save, num_frames * 1.0//fps)
 
         frames = frames.to(dtype=dtype, device=cuda_device)
-        print(frames.shape)
-        num_frames = int(batch['num_frames'][0])
+        latent = vae.encode(frames, sample_posterior=True, num_frames=num_frames, temp_compress=True).sample
+        print('latent shape', latent.shape)
 
-        print(torch.max(frames))
-        print(torch.min(frames))
+        recon_video = vae.decode(latent, num_frames=num_frames, temp_compress=True).sample
+        recon_video = recon_video.detach().cpu()
 
-        recon_video = vae(frames, sample_posterior=True, num_frames=num_frames, temp_compress=True).sample
-       
+        recon_video = ((recon_video + 1.0)/2.0).clamp(0,1)
+        save_to_local(save_root, f'{b_idx}_recon', recon_video, num_frames * 1.0//fps)
 
-        save_to_local(save_root, f'{b_idx}_recon', recon_video.cpu(), num_frames * 1.0//fps)
-
-
-        if b_idx == 2:
-
+        if b_idx == 5:
             break
 
 if __name__ == '__main__':

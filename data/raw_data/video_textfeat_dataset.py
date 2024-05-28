@@ -4,73 +4,63 @@ import signal
 import math
 import os
 import random
+import pickle
 from decord import VideoReader
 
-from torch.utils.data import DataLoader, Dataset
+from collections import defaultdict
+import torch
+from torch.utils.data import Dataset
 from torchvision import transforms as T
 from torchvision.transforms import InterpolationMode
 
 
-class PexelsDataset(Dataset):
+class VideoRawTextFeatDataset(Dataset):
     def __init__(
-            self,  
-            data_dir, 
-            meta_file_dir,
-            train_size, 
-            resize_list, 
-            resize_prob,
-            fps_list, 
-            random_flip=True, 
-            center_crop=False,
-            max_num_sample=None,
-            include_caption=False,
-        ):
+        self,
+        data_dir,
+        jsonl_dir,
+        pickle_save_dir,
+        train_size, 
+        resize_list, 
+        resize_prob,
+        fps_list, 
+        random_flip=True, 
+        center_crop=False,
+        load_meta_from_pickle=False,
+        max_num_samples=None,
+    ):
         super().__init__()
+        assert os.path.exists(data_dir), f'{str(data_dir)} must be a folder containing images'
+        assert os.path.exists(jsonl_dir) and jsonl_dir.endswith('.jsonl'), f'{str(jsonl_dir)} must be a jsonl file'
 
-        assert os.path.exists(meta_file_dir)
-        self.meta_file_dir = meta_file_dir
-        self.include_caption = include_caption
-
-        # read meta file and load video paths to self.video_list
-        self.read_meta(max_num_sample=max_num_sample)
-        if self.include_caption:
-            assert len(self.video_list) == len(self.caption_list)
-        self.len_data = len(self.video_list)
-        assert self.len_data > 0
-        self.shuffle_indices = [i for i in list(range(self.len_data))]
-        random.shuffle(self.shuffle_indices)
-
-        self.data_dir = data_dir
+        self.data_dir = data_dir  # dataset base folder dir
+        self.jsonl_dir = jsonl_dir  # absolute path to the jsonl file
         self.train_size = train_size
         self.fps_list = fps_list
         self.random_flip = random_flip
         self.center_crop = center_crop
         self.resize_list = resize_list
         self.resize_prob = resize_prob
+        self.max_num_samples = max_num_samples
 
-    def __len__(self):
-        # 382668 in total for pexles
-        return self.len_data
+        self.pickle_save_dir = pickle_save_dir
+        self.load_meta_from_pickle = load_meta_from_pickle
+        self.clip_id_meta = defaultdict(dict)
+        self.clip_id_list = []
 
-    def read_meta(self, max_num_sample=None):
-        video_list = []
-        caption_list = []
-        with open(self.meta_file_dir, 'r', encoding="utf-8") as f:
-            for line in jsonlines.Reader(f):
-                video_list.append(line['clip_id']+'.mp4')
-                if self.include_caption:
-                    caption_list.append(str(line['llava_medium']).strip())
+        self.load_meta()
 
-        # for debug
-        if max_num_sample:
-            self.video_list = video_list[:max_num_sample]
-            if self.include_caption:
-                self.caption_list = caption_list[:max_num_sample]
+        self.len_data = len(self.clip_id_list)
+        random.shuffle(self.clip_id_list)
+    
+    def load_meta(self):
+        if self.load_meta_from_pickle:
+            with open(self.pickle_save_dir, 'rb') as f:
+                self.clip_id_meta = pickle.load(f)
+                self.clip_id_list = list(self.clip_id_meta.keys())
         else:
-            self.video_list = video_list
-            if self.include_caption:
-                self.caption_list = caption_list
-
+            self.parse_meta_from_local()
+            
     def process_video(self, video):
         '''
         video:[f, h, w, c]
@@ -127,6 +117,10 @@ class PexelsDataset(Dataset):
             ].contiguous()
 
         return video_new
+
+    def __len__(self):
+        # 382668 in total for pexles
+        return self.len_data
     
     @staticmethod
     def _resample_video_idx(num_frames, original_fps, new_fps):
@@ -142,15 +136,45 @@ class PexelsDataset(Dataset):
         idxs = idxs.floor().to(torch.int64)
         return idxs
 
-    def __getitem__(self,idx):
-        data_dict = {'dataset': 'pexles'}
+    def parse_meta_from_local(self):
+
+        with open(self.jsonl_dir, 'r') as f:
+            for line in jsonlines.Reader(f):
+                text_feature_file_name = line['text_feature']
+                dataset_name =  text_feature_file_name.split('/')[0].split('_')[0]
+                clip_id = text_feature_file_name.split('/')[-1].split('.')[0]
+
+                text_feature_file_dir = os.path.join(self.data_dir, text_feature_file_name)
+                if os.path.exists(text_feature_file_dir):
+                    self.clip_id_meta[clip_id]['text_feature_dir'] = text_feature_file_dir
+                
+                video_data_file_dir = os.path.join(self.data_dir, dataset_name + '_clip', clip_id + '.mp4')
+                if os.path.exists(video_data_file_dir):
+                    self.clip_id_meta[clip_id]['video_dir'] = video_data_file_dir
+                
+                self.clip_id_meta[clip_id]['num_frame'] = line['num_frame']
+                self.clip_id_meta[clip_id]['dataset_name'] = dataset_name
+
+                if self.max_num_samples and len(self.clip_id_meta) == self.max_num_samples:
+                    break
+
+        f.close()
+        self.clip_id_list = list(self.clip_id_meta.keys())
+
+        # save clip_id_meta in pickel
+        with open(self.pickle_save_dir, 'wb') as f:
+            pickle.dump(self.clip_id_meta, f)
+        f.close()
+
+    def __getitem__(self, idx):
+        data_dict = {}
         def took_too_long(signum, frame):
             raise TimeoutError('Load', video_path, 'timeout')
         
         while True:
-            nidx = self.shuffle_indices[idx]
+            nidx = self.clip_id_list[idx]
             try:
-                video_path = os.path.join(self.data_dir, self.video_list[nidx])
+                video_path = self.clip_id_meta[nidx]['video_dir']
                 video_id = os.path.splitext(os.path.basename(video_path))[0]
                 video_folder = os.path.basename(os.path.dirname(video_path))
 
@@ -191,6 +215,11 @@ class PexelsDataset(Dataset):
                 video = self.process_video(video)   # f * c * h * w
                 video = video.float() / 127.5 - 1   # [-1, 1]
 
+                # load and process text embedding
+                text_feature_file_dir = self.clip_id_meta[nidx]['text_feature_dir']
+                t5_text_embedding = torch.load(text_feature_file_dir)['text_embed']
+                text_mask = torch.load(text_feature_file_dir)['text_mask']
+
                 data_dict['id'] = video_id
                 data_dict['v_feat_path'] = '%s.pt' % video_id
 
@@ -198,10 +227,11 @@ class PexelsDataset(Dataset):
                 data_dict['video'] = video.permute(1, 0, 2, 3).contiguous() # c * f * h * w
                 data_dict['fps'] = float(self.train_fps)
                 data_dict['num_frames'] = data_dict['video'].shape[1]
+                data_dict['dataset_name'] = self.clip_id_meta[nidx]['dataset_name']
 
-                if self.include_caption:
-                    caption_text = self.caption_list[nidx]
-                    data_dict['caption_text'] = caption_text
+                data_dict['text_embedding'] = t5_text_embedding
+                data_dict['text_mask'] = text_mask
+
 
                 return data_dict
                 # data_dict: {'dataset': 'pexles', 'id':xxx, 'folder':xxx, 'video':xxx}
@@ -210,50 +240,3 @@ class PexelsDataset(Dataset):
                 idx = (idx + 1) % self.len_data
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 continue
-
-
-
-def create_pexel_video_dataloader(config):
-    train_dataset = PexelsDataset(
-        config.dataset.train_meta, 
-        config.dataset.data_dir, 
-        config.dataset.train_size, 
-        config.dataset.resize_list, 
-        config.dataset.resize_prob,
-        config.dataset.fps_list, 
-        config.dataset.random_flip, 
-        config.dataset.center_crop
-    )
-
-    train_dataloader = DataLoader(
-        dataset=train_dataset,
-        batch_size=config.batch_size,
-        shuffle=True,  
-        num_workers=config.dataset.num_workers,      
-        pin_memory=False,
-    )
-
-    test_dataset = PexelsDataset(
-        config.dataset.val_meta, 
-        config.dataset.data_dir, 
-        config.dataset.train_size, 
-        config.dataset.resize_list, 
-        config.dataset.resize_prob,
-        config.dataset.fps_list, 
-        config.dataset.random_flip, 
-        config.dataset.center_crop
-    )
-
-    test_dataloader = DataLoader(
-        dataset=test_dataset,
-        batch_size=config.batch_size,
-        shuffle=False,  
-        num_workers=config.dataset.num_workers,      
-        pin_memory=False,
-    )
-    return train_dataloader, test_dataloader
-
-    
-
-    
-        

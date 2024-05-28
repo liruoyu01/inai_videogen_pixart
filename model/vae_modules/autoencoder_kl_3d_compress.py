@@ -39,18 +39,6 @@ from diffusers.models.modeling_utils import ModelMixin
 from model.vae_modules.vae_3d_compress import Decoder3D, Encoder
 from model.utils.decoder_utils import DecoderOutput, DiagonalGaussianDistribution
 
-# @dataclass
-# class AutoencoderKLOutput(BaseOutput):
-#     """
-#     Output of AutoencoderKL encoding method.
-
-#     Args:
-#         latent_dist (`DiagonalGaussianDistribution`):
-#             Encoded outputs of `Encoder` represented as the mean and logvar of `DiagonalGaussianDistribution`.
-#             `DiagonalGaussianDistribution` allows for sampling latents from the distribution.
-#     """
-
-#     latent_dist: "DiagonalGaussianDistribution"
 
 @dataclass
 class AutoencoderKLOutput(BaseOutput):
@@ -63,6 +51,7 @@ class AutoencoderKLOutput(BaseOutput):
     """
 
     sample: torch.FloatTensor
+    posterior: DiagonalGaussianDistribution
 
 
 class AutoencoderKL_3D(ModelMixin, ConfigMixin, FromSingleFileMixin):
@@ -329,7 +318,7 @@ class AutoencoderKL_3D(ModelMixin, ConfigMixin, FromSingleFileMixin):
         if not return_dict:
             return (z,)
 
-        return AutoencoderKLOutput(sample=z)
+        return AutoencoderKLOutput(sample=z, posterior=posterior)
 
     def _decode(self, z: torch.FloatTensor, num_frames: int=1, temp_compress: bool = False, return_dict: bool = True) -> Union[DecoderOutput, torch.FloatTensor]:
         if self.use_tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size):

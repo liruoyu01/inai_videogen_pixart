@@ -15,7 +15,7 @@ def export_to_video(
         if output_video_path is None:
             output_video_path = tempfile.NamedTemporaryFile(suffix=".mp4").name
 
-        video_frames = [(frame * 255).to(dtype=torch.uint8) for frame in video_frames]
+        video_frames = [(frame * 255).clamp(0, 255).to(dtype=torch.uint8) for frame in video_frames]
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         h, w, c = video_frames[0].shape

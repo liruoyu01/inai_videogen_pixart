@@ -64,6 +64,7 @@ for i, batch in enumerate(video_val_dataloader):
     v_id = batch['id']
     print(f'{folder}/{v_id}.mp4')
     print(batch['video'].size())
+    print(batch['v_feat_path'])
 
     captions = batch['caption_text']
     print(type(captions))
