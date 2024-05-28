@@ -18,8 +18,11 @@ accelerate launch --config_file distribute_configs/pixart_t2v_huoshan.yaml \
     --main_process_ip $MASTER_ADDR \
     --mixed_precision bf16 \
     --main_process_port $MASTER_PORT pipeline/trainer_vg_rawdata.py \
-    --project_name 'vg_replacesdxl_488vae_pixar_sigma_mix_frame120_bs4_t4' \
+    --project_name 'vg_replacesdxl_488vae_pixar_sigma_mix+img_frame120_img30_bs4_t1' \
     --video_dataset_name 'pixar_sigma_mix' \
+    --img_dataset_name 'mj_256' \
     --num_frame 120 \
+    --num_image 30 \
+    --print_now True \
     --train_batch_size 4
-# CUDA_VISIBLE_DEVICES='4,5,6,7' accelerate launch --config_file distribute_configs/pixart_t2v_huoshan.yaml  pipeline/trainer_vg_rawdata.py 
+# CUDA_VISIBLE_DEVICES='0,1,3,5' accelerate launch --config_file distribute_configs/pixart_t2v_huoshan.yaml  pipeline/trainer_vg_rawdata.py 

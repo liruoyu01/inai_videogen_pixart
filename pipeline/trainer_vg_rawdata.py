@@ -28,14 +28,17 @@ from data.raw_data.video_textfeat_dataset import VideoRawTextFeatDataset
 def prepare_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--work_dir', default='/ML-A100/team/mm/liruoyu/code/inai_videogen_pixart/exp_dir', help='the dir to save logs and models')
-    parser.add_argument('--project_name', type=str, default='vg_replacevae_3d_488_t1')
+    parser.add_argument('--project_name', type=str, default='local_test_dummy_project_name')
+    
     parser.add_argument('--num_train_samples', type=int, default=int(1e6))
+    parser.add_argument('--train_batch_size', type=int, default=16)
 
     parser.add_argument('--img_dataset_name', type=str, default='mj_256')
     parser.add_argument('--video_dataset_name', type=str, default='pixar_sigma_mix')
 
+    parser.add_argument('--resolution', type=str, default='256x256')
     parser.add_argument('--num_frame', type=int, default=120)
-    parser.add_argument('--num_image', type=int, default=0)
+    parser.add_argument('--num_image', type=int, default=30)
     parser.add_argument('--video_target_fps', type=int, default=30)
 
     parser.add_argument('--null_text', type=str, default='/ML-A100/team/mm/yanghuan/data/null_feature/pixart_sigma_text.pt')
@@ -43,18 +46,16 @@ def prepare_args():
     parser.add_argument('--max_text_length', type=int, default=300)
 
     parser.add_argument('--latent_scale_factor', type=float, default=0.13025)
-    parser.add_argument('--resolution', type=str, default='256x256')
 
     parser.add_argument('--transformer_model_path', type=str, default='/ML-A100/team/mm/yanghuan/expr/t2v_pixart-sigma/t2v_pixart-sigma_120x256x256_15fps_vimeo-mj-peter_20240507/00085000')
     parser.add_argument('--pretrained_vae_ckpt_path', type=str, default='/ML-A100/team/mm/wangqiuyue/experiments/SD_videoVAE_deepspeed/0511_compress_conti25k_conti25k6k_skip2_conv4out2C_2way_333temponlyfo_27k_add4conv/global_step72000.pt')
     parser.add_argument('--pipeline_load_from', type=str, default='/ML-A100/team/mm/yanghuan/huggingface/PixArt-alpha/PixArt-XL-2-512x512')
 
-    parser.add_argument('--train_batch_size', type=int, default=16)
     parser.add_argument('--lr', type=float, default=2e-5)
     parser.add_argument('--grad_accum', type=int, default=1)
     parser.add_argument('--train_step', type=int, default=1000000)
-    parser.add_argument('--print_step', type=int, default=10)
-    parser.add_argument('--save_step', type=int, default=1000)
+    parser.add_argument('--print_step', type=int, default=5)
+    parser.add_argument('--save_step', type=int, default=200)
     parser.add_argument('--grad_norm', type=float, default=1.0)
     parser.add_argument('--precision', type=str, default='bf16') #bf16
     parser.add_argument('--seed', type=int, default=19910511)
@@ -64,26 +65,25 @@ def prepare_args():
     return args
 
 
-def prepare_image_dataset(args):
+def prepare_image_feature_dataset(args):
+    # both image latent and text caption are in tensor format, no need for vae run.
     img_dataset_path = {
         'sigma_512': [
             '/ML-A100/team/mm/yanghuan/data/', 
             '/ML-A100/team/mm/yanghuan/data/pixart-sigma_hq-image-512x512_llava-text_feature_20240425.jsonl',
         ],
-        'mj_512': [
-            '/ML-A100/team/mm/yanghuan/data/', 
-            '/ML-A100/team/mm/yanghuan/data/pixart-sigma_midjourney-peter-image-512x512_user-llava-text_feature_20240430.jsonl', 
-            ['llava_text_feature', ('user_text_feature', 0.5)],
-        ],
+        # 'mj_512': [
+        #     '/ML-A100/team/mm/yanghuan/data/', 
+        #     '/ML-A100/team/mm/yanghuan/data/pixart-sigma_midjourney-peter-image-512x512_user-llava-text_feature_20240430.jsonl', 
+        #     ['llava_text_feature', ('user_text_feature', 0.5)],
+        # ],
         'mj_256': [
             '/ML-A100/team/mm/yanghuan/data/', 
             '/ML-A100/team/mm/yanghuan/data/pixart-sigma_midjourney-peter-image-256x256_user-llava-text_feature_20240430.jsonl'
         ],
     }
     assert args.img_dataset_name in img_dataset_path
-
-    data_dir = img_dataset_path[args.img_dataset_name][0]
-    meta_json_dir = img_dataset_path[args.img_dataset_name][1]
+    data_dir, meta_json_dir = img_dataset_path[args.img_dataset_name]
 
     mj_feature_dataset = ImageJsonFeatureDataset(
         data_dir, 
@@ -104,7 +104,9 @@ def prepare_image_dataset(args):
 
     return image_dataloader
 
-def prepare_video_dataset(args):
+def prepare_raw_video_dataset(args):
+    # both video and caption text are in raw format, 
+    # need pass vae and text encoder to get latent
     video_dataset_path = {
         'pexel_video': [
             '/ML-A100/team/mm/yanghuan/data/pexels_clip', 
@@ -112,9 +114,7 @@ def prepare_video_dataset(args):
         ]
     }
     assert args.video_dataset_name in video_dataset_path
-
-    data_dir = video_dataset_path[args.video_dataset_name][0]
-    meta_json_dir = video_dataset_path[args.video_dataset_name][1]
+    data_dir, meta_json_dir = video_dataset_path[args.video_dataset_name]
 
     h,w = list(map(int, args.resolution.split('x')))
     # print(f'height/width : {h}/{w}')
@@ -139,7 +139,9 @@ def prepare_video_dataset(args):
 
     return video_dataloader
 
-def prepare_mix_dataset(args):
+def prepare_videotext_mix_dataset(args):
+    # video is fetched in raw format, will be passed via VAE to get latent
+    # text is fetched in tensor format, emb and mask
 
     dataset_path = {
         'pixar_sigma_mix': [
@@ -164,7 +166,7 @@ def prepare_mix_dataset(args):
         resize_prob=[1.],
         fps_list=[30],
         max_num_samples=args.num_train_samples,
-        load_meta_from_pickle=True,
+        load_meta_from_pickle=True,  # not need to process meta to get pt file path, directly read from pre-saved pickel
     )
 
     print(f'dataset {args.video_dataset_name} has {len(dataset)} train samples.')
@@ -239,13 +241,14 @@ class DiTVideoGenTrainer:
         
         optimizer = AdamW(trainable_params, lr=args.lr)
 
-        # img_loader = prepare_image_dataset(args)
-        # video_loader = prepare_video_dataset(args)
-        video_loader = prepare_mix_dataset(args)
-        self.model, self.optim, self.video_loader = self.accelerator.prepare(
+        img_loader = prepare_image_feature_dataset(args)
+        # video_loader = prepare_raw_video_dataset(args)
+        video_loader = prepare_videotext_mix_dataset(args)
+        self.model, self.optim, self.video_loader, self.img_loader = self.accelerator.prepare(
             model, 
             optimizer, 
             video_loader,
+            img_loader,
         )
 
         self.diffusion = IDDPM()
@@ -348,48 +351,61 @@ class DiTVideoGenTrainer:
         batch_size = self.args.train_batch_size
         num_frame = self.args.num_frame
 
+        if self.accelerator.is_local_main_process and self.print_now:
+            self.accelerator.print('imean shape as input', imean.shape)
+            self.accelerator.print('vmean shape as input', vmean.shape)
+
         imean = rearrange(imean, '(b f) c h w -> b f c h w', b=batch_size)
         istd = rearrange(istd, '(b f) c h w -> b f c h w', b=batch_size)
 
         vmean = rearrange(vmean, '(b f) c h w -> b f c h w', b=batch_size)
         vstd = rearrange(vstd, '(b f) c h w -> b f c h w', b=batch_size)
-
+        
         if self.accelerator.is_local_main_process and self.print_now:
-            self.accelerator.print(imean.shape)
-            self.accelerator.print(vmean.shape)
+            self.accelerator.print('imean shape after rearange', imean.shape)
+            self.accelerator.print('vmean shape after rearange', vmean.shape)
 
         mean = torch.cat((vmean, imean), dim=1)
         std = torch.cat((vstd, istd), dim=1)
         if self.accelerator.is_local_main_process and self.print_now:
-            self.accelerator.print(mean.shape)
-            self.accelerator.print(std.shape)
+            self.accelerator.print('mean cat', mean.shape)
         
         mean = rearrange(mean, 'b f c h w -> (b f) c h w')
         std = rearrange(std, 'b f c h w -> (b f) c h w')
         if self.accelerator.is_local_main_process and self.print_now:
-            self.accelerator.print(mean.shape)
-            self.accelerator.print(std.shape)
+            self.accelerator.print('mean cat and rearrange', mean.shape)
 
         vtext = repeat(vtext, 'b t c -> b f t c', f=num_frame//4)
         vmask = repeat(vmask, 'b t -> b f t', f=num_frame//4)
         itext = rearrange(itext, '(b f) t c -> b f t c', b=batch_size)
         imask = rearrange(imask, '(b f) t -> b f t', b=batch_size)
+
+        if self.accelerator.is_local_main_process and self.print_now:
+            self.accelerator.print('vtext shape after repeat and rearrange', vtext.shape)
+            self.accelerator.print('itext shape after rearrange', itext.shape)
+
         
         text = torch.cat((vtext, itext), dim=1)
         mask = torch.cat((vmask, imask), dim=1)
         text = rearrange(text, 'b f t c -> (b f) t c')
         mask = rearrange(mask, 'b f t -> (b f) t')
 
+        if self.accelerator.is_local_main_process and self.print_now:
+            self.accelerator.print('text shape after cat and rearrange', text.shape)
+            self.accelerator.print('mask shape after cat and rearrange', mask.shape)
+
 
         sample = randn_tensor(mean.shape, generator=None, device=self.device)
         latent = (mean + std * sample) * self.args.latent_scale_factor
+        if self.accelerator.is_local_main_process and self.print_now:
+            self.accelerator.print('latent shape finally', latent.shape)
         return latent, text, mask
     
     def train(self):
         num_step = 0
         loss_accum = 0.0
         loss_count = 0
-        # img_loader_iter = iter(self.img_loader)
+        img_loader_iter = iter(self.img_loader)
         video_loader_iter = iter(self.video_loader)
 
         if self.accelerator.is_local_main_process:
@@ -397,20 +413,21 @@ class DiTVideoGenTrainer:
 
         while num_step < self.args.train_step:
             try:
-                # i_mean, i_std, i_text, i_mask = next(img_loader_iter)
+                i_mean, i_std, i_text, i_mask = next(img_loader_iter)
                 video_batch = next(video_loader_iter)
                 v_mean, v_std, v_text, v_mask = self.process_video_batch(video_batch)
 
             except StopIteration:
-                # img_loader_iter = iter(self.img_loader)
+                img_loader_iter = iter(self.img_loader)
                 video_loader_iter = iter(self.video_loader)
-                # i_mean, i_std, i_text, i_mask = next(img_loader_iter)
+                i_mean, i_std, i_text, i_mask = next(img_loader_iter)
                 video_batch = next(video_loader_iter)
                 v_mean, v_std, v_text, v_mask = self.process_video_batch(video_batch)
 
             # get latent, text and mask for diffusion 
-            # latent, text, mask = self.img_video_joint_latent(i_mean, i_std, i_text, i_mask, v_mean, v_std, v_text, v_mask)
-            latent, text, mask = self.video_latent(v_mean, v_std, v_text, v_mask)
+            latent, text, mask = self.img_video_joint_latent(i_mean, i_std, i_text, i_mask, v_mean, v_std, v_text, v_mask)
+            # latent, text, mask = self.video_latent(v_mean, v_std, v_text, v_mask)
+            
             
             bs = latent.shape[0]    
             timestep = torch.randint(0, 1000, (bs,), device=self.device).long()
